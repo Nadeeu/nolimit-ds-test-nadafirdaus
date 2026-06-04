@@ -1,6 +1,7 @@
 data/Twitter_Emotion_Dataset.csv
 venv/
-artifacts/
+artifacts/embeddings.npy
+artifacts/model_output/
 __pycache__/
 *.pyc
 *.pyo
