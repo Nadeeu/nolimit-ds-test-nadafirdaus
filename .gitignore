@@ -1,0 +1,9 @@
+data/Twitter_Emotion_Dataset.csv
+venv/
+artifacts/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.ipynb_checkpoints/
+.vscode/
