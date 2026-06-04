@@ -1,143 +1,93 @@
-import yaml
+import os
+import sys
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
+
 import numpy as np
-import faiss
 import pandas as pd
+import faiss
 import streamlit as st
-import re
+import yaml
 
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
-from sentence_transformers import SentenceTransformer
-from Sastrawi.StopWordRemover.StopWordRemoverFactory import StopWordRemoverFactory, ArrayDictionary
-from Sastrawi.StopWordRemover.StopWordRemover import StopWordRemover
+from src.preprocessing import clean_tweet, normalize, remove_stopwords, load_kamus, ALL_STOPWORDS
+from src.embeddings import load_embedder, load_embeddings
+from src.clustering import build_faiss_index, get_topic_by_nearest
+from src.classifier import load_model, predict_emotion
 
-
-ID2LABEL = {0: "anger", 1: "fear", 2: "happy", 3: "love", 4: "sadness"}
 EMOJI_MAP = {
-    "anger"  : "😠",
-    "fear"   : "😨",
-    "happy"  : "😊",
-    "love"   : "❤️",
-    "sadness": "😢"
+    'anger'  : '😠',
+    'fear'   : '😨',
+    'happy'  : '😊',
+    'love'   : '❤️',
+    'sadness': '😢'
 }
+
 COLOR_MAP = {
-    "anger"  : "red",
-    "fear"   : "orange",
-    "happy"  : "green",
-    "love"   : "pink",
-    "sadness": "blue"
+    'anger'  : 'red',
+    'fear'   : 'orange',
+    'happy'  : 'green',
+    'love'   : 'pink',
+    'sadness': 'blue'
 }
-EXTRA_STOPWORDS = [
-    "kamu", "saya", "aku", "ku", "mu", "nya", "kami", "kita", "dia", "mereka",
-    "yang", "dan", "di", "ke", "dari", "dengan", "untuk", "atau", "tapi",
-    "karena", "kalau", "jika", "agar", "supaya", "namun", "tetapi", "serta",
-    "tidak", "tak", "bukan", "mau", "bisa", "ada", "sudah", "belum",
-    "akan", "jadi", "terus", "sama", "aja", "juga", "udah", "sih", "deh",
-    "dong", "loh", "lah", "kan", "pun", "tuh", "nih",
-    "lebih", "sekali", "sangat", "banyak", "semua", "setiap", "para",
-    "hari", "ini", "itu", "sini", "sana", "situ", "sekarang", "nanti",
-    "url", "pas", "buat", "pakai", "tahu", "memang", "orang", "apa",
-    "sendiri", "salah", "baru", "cuma", "teman"
-]
+
 
 @st.cache_resource
 def load_config():
-    with open("config.yaml", "r") as f:
+    with open('config.yaml', 'r') as f:
         return yaml.safe_load(f)
 
 
 @st.cache_resource
-def load_classifier():
+def get_classifier():
     config = load_config()
-    tokenizer = AutoTokenizer.from_pretrained(config["models"]["classifier"])
-    model = AutoModelForSequenceClassification.from_pretrained(config["models"]["classifier"])
-    model.eval()
-    return tokenizer, model
+    return load_model(config['models']['classifier'])
 
 
 @st.cache_resource
-def load_embedder():
+def get_embedder():
     config = load_config()
-    return SentenceTransformer(config["models"]["embedding"])
+    return load_embedder(config['models']['embedding'])
 
 
 @st.cache_resource
-def load_faiss():
-    emb_path = "artifacts/embeddings.npy"
+def get_faiss():
+    emb_path = 'artifacts/embeddings.npy'
 
-    # Download from HF Hub if not found locally
     if not os.path.exists(emb_path):
         from huggingface_hub import hf_hub_download
-        os.makedirs("artifacts", exist_ok=True)
+        os.makedirs('artifacts', exist_ok=True)
         emb_path = hf_hub_download(
-            repo_id="Nadaa9/indobert-emotion-twitter",
-            filename="embeddings.npy",
-            local_dir="artifacts"
+            repo_id='Nadaa9/indobert-emotion-twitter',
+            filename='embeddings.npy',
+            local_dir='artifacts'
         )
 
-    embeddings = np.load(emb_path).astype("float32")
-    df_ref     = pd.read_csv("artifacts/predictions.csv")
-
-    n     = len(df_ref)
-    index = faiss.IndexFlatL2(embeddings.shape[1])
-    index.add(embeddings[:n])
+    embeddings = load_embeddings(emb_path).astype('float32')
+    df_ref     = pd.read_csv('artifacts/predictions.csv')
+    index      = build_faiss_index(embeddings[:len(df_ref)])
 
     return index, df_ref
 
 
 @st.cache_resource
-def load_stopword_remover():
-    factory = StopWordRemoverFactory()
-    all_stopwords = factory.get_stop_words() + EXTRA_STOPWORDS
-    dictionary = ArrayDictionary(all_stopwords)
-    return StopWordRemover(dictionary)
-
-
-def clean_text(text: str) -> str:
-    text = str(text).lower()
-    text = re.sub(r"http[s]?://\S+|www\.\S+", "", text)
-    text = re.sub(r"rt\s+@\w+:?", "", text)
-    text = re.sub(r"@\w+", "", text)
-    text = re.sub(r"\[username\]", "", text)
-    text = re.sub(r"[^a-z\s]", " ", text)
-    return re.sub(r"\s+", " ", text).strip()
+def get_kamus():
+    return load_kamus('data/kamus_singkatan.csv')
 
 
 def predict(text: str) -> dict:
-    import torch
+    tokenizer, model = get_classifier()
+    embedder         = get_embedder()
+    index, df_ref    = get_faiss()
+    kamus_dict       = get_kamus()
 
-    tokenizer, model = load_classifier()
-    embedder         = load_embedder()
-    index, df_ref    = load_faiss()
-    stopword_remover = load_stopword_remover()
+    cleaned    = clean_tweet(text)
+    normalized = normalize(cleaned, kamus_dict)
+    final      = remove_stopwords(normalized)
 
-    # Preprocess
-    cleaned = clean_text(text)
-    final   = stopword_remover.remove(cleaned)
+    emb   = embedder.encode([final]).astype('float32')
+    topic = get_topic_by_nearest(emb, index, df_ref)
 
-    # Topic via FAISS nearest neighbor
-    emb      = embedder.encode([final]).astype("float32")
-    _, I     = index.search(emb, 1)
-    topic    = df_ref.iloc[I[0][0]]["topic"]
+    result          = predict_emotion(text, tokenizer, model)
+    result['topic'] = topic
+    result['emoji'] = EMOJI_MAP[result['emotion']]
 
-    # Classify emotion
-    inputs = tokenizer(
-        text, return_tensors="pt",
-        truncation=True, padding=True, max_length=128
-    )
-    with torch.no_grad():
-        outputs = model(**inputs)
-
-    import torch.nn.functional as F
-    probs      = F.softmax(outputs.logits, dim=-1)[0].numpy()
-    pred_id    = int(probs.argmax())
-    emotion    = ID2LABEL[pred_id]
-    confidence = float(probs[pred_id]) * 100
-    all_probs  = {ID2LABEL[i]: round(float(probs[i]) * 100, 2) for i in range(5)}
-
-    return {
-        "emotion"   : emotion,
-        "confidence": confidence,
-        "topic"     : topic,
-        "all_probs" : all_probs,
-        "emoji"     : EMOJI_MAP[emotion]
-    }
+    return result
