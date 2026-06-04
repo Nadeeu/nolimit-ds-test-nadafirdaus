@@ -1,6 +1,9 @@
 import os
 import sys
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+ROOT_DIR = os.path.abspath(os.path.join(BASE_DIR, '..', '..'))
+sys.path.append(ROOT_DIR)
 
 import numpy as np
 import pandas as pd
@@ -8,7 +11,7 @@ import faiss
 import streamlit as st
 import yaml
 
-from src.preprocessing import clean_tweet, normalize, remove_stopwords, load_kamus, ALL_STOPWORDS
+from src.preprocessing import clean_tweet, normalize, remove_stopwords, load_kamus
 from src.embeddings import load_embedder, load_embeddings
 from src.clustering import build_faiss_index, get_topic_by_nearest
 from src.classifier import load_model, predict_emotion
@@ -32,7 +35,8 @@ COLOR_MAP = {
 
 @st.cache_resource
 def load_config():
-    with open('config.yaml', 'r') as f:
+    config_path = os.path.join(ROOT_DIR, 'config.yaml')
+    with open(config_path, 'r') as f:
         return yaml.safe_load(f)
 
 
@@ -50,19 +54,20 @@ def get_embedder():
 
 @st.cache_resource
 def get_faiss():
-    emb_path = 'artifacts/embeddings.npy'
+    emb_path  = os.path.join(ROOT_DIR, 'artifacts', 'embeddings.npy')
+    pred_path = os.path.join(ROOT_DIR, 'artifacts', 'predictions.csv')
 
     if not os.path.exists(emb_path):
         from huggingface_hub import hf_hub_download
-        os.makedirs('artifacts', exist_ok=True)
+        os.makedirs(os.path.dirname(emb_path), exist_ok=True)
         emb_path = hf_hub_download(
             repo_id='Nadaa9/indobert-emotion-twitter',
             filename='embeddings.npy',
-            local_dir='artifacts'
+            local_dir=os.path.join(ROOT_DIR, 'artifacts')
         )
 
     embeddings = load_embeddings(emb_path).astype('float32')
-    df_ref     = pd.read_csv('artifacts/predictions.csv')
+    df_ref     = pd.read_csv(pred_path)
     index      = build_faiss_index(embeddings[:len(df_ref)])
 
     return index, df_ref
@@ -70,7 +75,8 @@ def get_faiss():
 
 @st.cache_resource
 def get_kamus():
-    return load_kamus('data/kamus_singkatan.csv')
+    kamus_path = os.path.join(ROOT_DIR, 'data', 'kamus_singkatan.csv')
+    return load_kamus(kamus_path)
 
 
 def predict(text: str) -> dict:
